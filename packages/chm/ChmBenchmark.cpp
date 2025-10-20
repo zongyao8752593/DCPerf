@@ -36,6 +36,8 @@
 // Command line flags
 DEFINE_string(distribution_file, "", "Path to the distribution CSV file");
 DEFINE_int32(num_threads, 4, "Number of worker threads per batch");
+// If num_threads_for_one_socket is true then it will override num_threads
+DEFINE_bool(num_threads_for_one_socket, false, "Use number of threads available in socket 0");
 DEFINE_int32(num_batch_threads, 2, "Number of parallel batch threads");
 DEFINE_int32(duration_seconds, 10, "Benchmark duration in seconds");
 DEFINE_int32(initial_capacity, 0, "Initial hash map capacity hint");
@@ -623,6 +625,34 @@ class ChmBenchmark {
 } // namespace chm_benchmark
 
 /**
+ * Get the cpu core count on single socket
+ */
+int get_cpu_core_count_for_one_socket() {
+    FILE* pipe = popen("lscpu -p=CPU,SOCKET", "r");
+    if (!pipe) {
+        std::cerr << "Failed to run lscpu\n";
+        return -1;
+    }
+
+    char line[128];
+    int cpu, socket;
+    int target_socket = 0; // Assume socket 0
+    int count = 0;
+    while (fgets(line, sizeof(line), pipe)) {
+        if (line[0] == '#') continue;
+        if (sscanf(line, "%d,%d", &cpu, &socket) == 2) {
+            if (socket == target_socket) {
+                count++;
+            }
+        }
+    }
+
+    pclose(pipe);
+    return count;
+}
+
+
+/**
  * Main entry point for the ConcurrentHashMap benchmark
  * Parses command line arguments, loads distribution data, and executes
  * benchmark
@@ -630,6 +660,17 @@ class ChmBenchmark {
 int main(int argc, char* argv[]) {
   // Parse command line flags
   gflags::ParseCommandLineFlags(&argc, &argv, true);
+
+  // Check autoscale
+  if(FLAGS_num_threads_for_one_socket){
+    int num_threads = get_cpu_core_count_for_one_socket();
+      if (0 >= num_threads) {
+        std::cerr << "Failed to get cpu core count!\n";
+        return 1;
+      }
+      FLAGS_num_threads = num_threads;
+      std::cout << "Autoscaled: " << FLAGS_num_threads << std::endl;
+  }
 
   if (FLAGS_distribution_file.empty()) {
     std::cerr
